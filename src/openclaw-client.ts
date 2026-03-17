@@ -35,7 +35,7 @@ export interface MessageInfo {
   id: string;
   role: 'user' | 'assistant' | string;
   content: string | ContentBlock[];
-  timestamp?: string;
+  timestamp?: string | number;
   model?: string;
 }
 

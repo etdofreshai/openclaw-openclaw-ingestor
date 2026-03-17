@@ -67,7 +67,11 @@ export async function ingestMessage(
     const result = await postMessage({
       source: 'openclaw',
       external_id: externalId,
-      timestamp: timestamp || new Date().toISOString(),
+      timestamp: timestamp
+        ? (typeof timestamp === 'number' || /^\d+$/.test(String(timestamp))
+            ? new Date(Number(timestamp)).toISOString()
+            : String(timestamp))
+        : new Date().toISOString(),
       sender,
       recipient,
       content: textContent || '[attachment only]',
