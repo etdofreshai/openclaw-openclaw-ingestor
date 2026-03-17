@@ -1,31 +1,32 @@
 /**
- * Real-time file watcher for OpenClaw JSONL session files.
- * Watches both session dirs, debounces changes, processes new bytes.
+ * Polling-based watcher for OpenClaw sessions.
+ * Replaces the filesystem watcher — polls the OpenClaw API periodically
+ * and ingests new messages.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { ingestEntry } from './ingest.js';
-
-const SESSION_DIRS = [
-  '/data/.openclaw/agents/main/sessions',
-  '/data/.openclaw/cron/runs',
-];
+import { listSessions, getSessionHistory } from './openclaw-client.js';
+import { ingestMessage } from './ingest.js';
+import type { SessionInfo } from './openclaw-client.js';
 
 const STATE_FILE = path.join(process.cwd(), '.watcher-state.json');
-const DEBOUNCE_MS = 2000;
-const POLL_INTERVAL_MS = 60_000;
+const POLL_INTERVAL_MS = 60_000; // 60 seconds
+const MESSAGES_PER_POLL = 200;
 
 interface WatcherState {
-  offsets: Record<string, number>; // filePath → byte offset
+  /** sessionKey → lastMessageId */
+  sessions: Record<string, string>;
+  /** ISO timestamp of last successful poll */
+  lastPoll: string;
 }
 
 function log(msg: string): void {
-  console.log(`[watcher] ${new Date().toISOString()} ${msg}`);
+  console.log(`[poller] ${new Date().toISOString()} ${msg}`);
 }
 
 function logError(msg: string): void {
-  console.error(`[watcher] ${new Date().toISOString()} ${msg}`);
+  console.error(`[poller] ${new Date().toISOString()} ${msg}`);
 }
 
 function loadState(): WatcherState {
@@ -37,7 +38,7 @@ function loadState(): WatcherState {
   } catch (err) {
     logError(`Failed to load state: ${(err as Error).message}`);
   }
-  return { offsets: {} };
+  return { sessions: {}, lastPoll: '' };
 }
 
 function saveState(state: WatcherState): void {
@@ -49,167 +50,139 @@ function saveState(state: WatcherState): void {
 }
 
 /**
- * Extract session ID from file path.
- * e.g., /data/.openclaw/agents/main/sessions/abc123.jsonl → abc123
+ * Determine which sessions have been updated since our last poll.
  */
-function sessionIdFromPath(filePath: string): string {
-  return path.basename(filePath, '.jsonl');
+function findUpdatedSessions(
+  sessions: SessionInfo[],
+  lastPoll: string,
+): SessionInfo[] {
+  if (!lastPoll) {
+    // First run — process all sessions
+    return sessions;
+  }
+
+  const lastPollTime = new Date(lastPoll).getTime();
+  return sessions.filter(s => {
+    if (!s.lastMessageAt) return true; // Unknown — include to be safe
+    return new Date(s.lastMessageAt).getTime() > lastPollTime;
+  });
 }
 
 /**
- * Process new bytes in a JSONL file since the last known offset.
+ * Poll once: fetch updated sessions, ingest new messages.
+ * Returns counts of processed messages.
  */
-async function processFile(filePath: string, state: WatcherState): Promise<number> {
-  const offset = state.offsets[filePath] || 0;
-  let stat: fs.Stats;
-
-  try {
-    stat = fs.statSync(filePath);
-  } catch {
-    return 0;
-  }
-
-  if (stat.size <= offset) {
-    return 0; // No new data
-  }
-
-  const sessionId = sessionIdFromPath(filePath);
-  const fd = fs.openSync(filePath, 'r');
-  const bufferSize = stat.size - offset;
-  const buffer = Buffer.alloc(bufferSize);
-  fs.readSync(fd, buffer, 0, bufferSize, offset);
-  fs.closeSync(fd);
-
-  const newData = buffer.toString('utf-8');
-  const lines = newData.split('\n').filter(l => l.trim());
-
+async function pollOnce(state: WatcherState): Promise<{ processed: number; errors: number }> {
   let processed = 0;
-  for (const line of lines) {
+  let errors = 0;
+
+  const sessions = await listSessions({ limit: 500 });
+  const updated = findUpdatedSessions(sessions, state.lastPoll);
+
+  if (updated.length === 0) {
+    return { processed: 0, errors: 0 };
+  }
+
+  log(`${updated.length} session(s) updated since last poll`);
+
+  for (const session of updated) {
+    const { sessionKey } = session;
+
     try {
-      const entry = JSON.parse(line);
-      const ok = await ingestEntry(entry, sessionId, 'watcher');
-      if (ok) processed++;
-    } catch (err) {
-      // Skip malformed lines
-      if (line.trim()) {
-        logError(`Malformed JSON in ${filePath}: ${(err as Error).message}`);
+      const lastMessageId = state.sessions[sessionKey];
+      const afterOpt = lastMessageId ? { after: lastMessageId } : undefined;
+
+      const messages = await getSessionHistory(sessionKey, {
+        limit: MESSAGES_PER_POLL,
+        ...afterOpt,
+      });
+
+      if (messages.length === 0) continue;
+
+      let latestId = lastMessageId || '';
+
+      for (const msg of messages) {
+        // Skip already-seen messages
+        if (lastMessageId && msg.id <= lastMessageId) {
+          continue;
+        }
+
+        try {
+          const ok = await ingestMessage(msg, sessionKey, 'poller');
+          if (ok) processed++;
+        } catch (err) {
+          errors++;
+          logError(`Error ingesting ${sessionKey}:${msg.id}: ${(err as Error).message}`);
+        }
+
+        if (msg.id > latestId) {
+          latestId = msg.id;
+        }
       }
+
+      if (latestId) {
+        state.sessions[sessionKey] = latestId;
+      }
+    } catch (err) {
+      errors++;
+      logError(`Failed to process session ${sessionKey}: ${(err as Error).message}`);
+      // Continue with next session
     }
   }
 
-  state.offsets[filePath] = stat.size;
+  state.lastPoll = new Date().toISOString();
   saveState(state);
 
-  if (processed > 0) {
-    log(`Processed ${processed} entries from ${path.basename(filePath)}`);
-  }
-
-  return processed;
+  return { processed, errors };
 }
 
 /**
- * Scan a directory for JSONL files and process any new data.
+ * Start the polling watcher. Returns a cleanup function.
  */
-async function scanDir(dir: string, state: WatcherState): Promise<number> {
-  if (!fs.existsSync(dir)) return 0;
-
-  const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
-  let total = 0;
-
-  for (const file of files) {
-    const filePath = path.join(dir, file);
-    total += await processFile(filePath, state);
-  }
-
-  return total;
-}
-
-/**
- * Start the watcher. Returns a cleanup function.
- */
-export async function startWatcher(): Promise<() => void> {
+export async function startPoller(): Promise<() => void> {
   const state = loadState();
-  const watchers: fs.FSWatcher[] = [];
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
-  let processing = false;
+  let polling = false;
   let shutdownRequested = false;
 
-  const processAll = async (): Promise<void> => {
-    if (processing || shutdownRequested) return;
-    processing = true;
+  const doPoll = async (): Promise<void> => {
+    if (polling || shutdownRequested) return;
+    polling = true;
 
     try {
-      for (const dir of SESSION_DIRS) {
-        await scanDir(dir, state);
+      const { processed, errors } = await pollOnce(state);
+      if (processed > 0 || errors > 0) {
+        log(`Poll complete: ${processed} processed, ${errors} errors`);
       }
     } catch (err) {
-      logError(`Error during scan: ${(err as Error).message}`);
+      logError(`Poll error: ${(err as Error).message}`);
     } finally {
-      processing = false;
+      polling = false;
     }
   };
 
-  const debouncedProcess = (): void => {
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      void processAll();
-    }, DEBOUNCE_MS);
-  };
+  // Initial poll
+  log('Running initial poll...');
+  await doPoll();
+  log(`Initial poll complete. Polling every ${POLL_INTERVAL_MS / 1000}s...`);
 
-  // Set up fs.watch on each directory
-  for (const dir of SESSION_DIRS) {
-    if (!fs.existsSync(dir)) {
-      log(`Directory not found, skipping watch: ${dir}`);
-      continue;
-    }
-
-    try {
-      const watcher = fs.watch(dir, { persistent: true }, (eventType, filename) => {
-        if (filename && filename.endsWith('.jsonl')) {
-          debouncedProcess();
-        }
-      });
-
-      watcher.on('error', (err) => {
-        logError(`Watch error on ${dir}: ${(err as Error).message}`);
-      });
-
-      watchers.push(watcher);
-      log(`Watching: ${dir}`);
-    } catch (err) {
-      logError(`Failed to watch ${dir}: ${(err as Error).message}`);
-    }
-  }
-
-  // Safety poll every 60s
+  // Start periodic polling
   pollTimer = setInterval(() => {
-    debouncedProcess();
+    void doPoll();
   }, POLL_INTERVAL_MS);
-
-  // Initial scan
-  log('Running initial scan...');
-  await processAll();
-  log('Initial scan complete. Watching for changes...');
 
   // Cleanup function
   const cleanup = (): void => {
     shutdownRequested = true;
-    log('Shutting down...');
+    log('Shutting down poller...');
 
-    if (debounceTimer) clearTimeout(debounceTimer);
-    if (pollTimer) clearInterval(pollTimer);
-
-    for (const w of watchers) {
-      try {
-        w.close();
-      } catch {
-        // ignore
-      }
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
     }
 
     saveState(state);
-    log('Shutdown complete.');
+    log('Poller shutdown complete.');
   };
 
   return cleanup;

@@ -1,25 +1,65 @@
 /**
  * OpenClaw Ingestor — Entry point.
- * Starts the real-time JSONL watcher.
+ * Starts the API-based polling watcher.
  */
 
-import { startWatcher } from './watcher.js';
+import { startPoller } from './watcher.js';
+
+const RETRY_DELAY_MS = 30_000;
 
 function log(msg: string): void {
   console.log(`[main] ${new Date().toISOString()} ${msg}`);
 }
 
+function logError(msg: string): void {
+  console.error(`[main] ${new Date().toISOString()} ${msg}`);
+}
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function main(): Promise<void> {
   log('OpenClaw Ingestor starting...');
-  log(`API URL: ${process.env.MEMORY_DATABASE_API_URL || 'https://memory-database.etdofresh.com'}`);
+  log(`Memory DB API: ${process.env.MEMORY_DATABASE_API_URL || 'https://memory-database.etdofresh.com'}`);
   log(`Write token: ${process.env.MEMORY_DATABASE_API_WRITE_TOKEN ? '***set***' : 'NOT SET'}`);
 
-  const cleanup = await startWatcher();
+  // Validate OpenClaw credentials — warn but don't crash
+  if (!process.env.OPENCLAW_URL) {
+    logError('OPENCLAW_URL is not set — will retry until available');
+  } else {
+    log(`OpenClaw API: ${process.env.OPENCLAW_URL}`);
+  }
+
+  if (!process.env.OPENCLAW_TOKEN) {
+    logError('OPENCLAW_TOKEN is not set — will retry until available');
+  } else {
+    log(`OpenClaw token: ***set***`);
+  }
+
+  // Retry loop — keep trying if credentials aren't ready yet
+  let cleanup: (() => void) | null = null;
+
+  while (!cleanup) {
+    if (!process.env.OPENCLAW_URL || !process.env.OPENCLAW_TOKEN) {
+      log(`Waiting ${RETRY_DELAY_MS / 1000}s for OPENCLAW_URL and OPENCLAW_TOKEN to be set...`);
+      await sleep(RETRY_DELAY_MS);
+      continue;
+    }
+
+    try {
+      cleanup = await startPoller();
+    } catch (err) {
+      logError(`Failed to start poller: ${(err as Error).message}`);
+      log(`Retrying in ${RETRY_DELAY_MS / 1000}s...`);
+      await sleep(RETRY_DELAY_MS);
+    }
+  }
 
   // Graceful shutdown
   const shutdown = (): void => {
     log('Received shutdown signal');
-    cleanup();
+    if (cleanup) cleanup();
     process.exit(0);
   };
 

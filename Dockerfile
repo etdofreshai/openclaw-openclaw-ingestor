@@ -1,12 +1,12 @@
 # OpenClaw Ingestor
-# Standalone chat + attachment ingestor for the Memory Database API.
+# Pulls chat sessions from the OpenClaw Gateway API and writes them
+# to the Memory Database API. No filesystem access required.
 #
-# ENV vars:
+# ENV vars (required):
+#   OPENCLAW_URL                   — OpenClaw gateway URL (e.g. http://openclaw-gateway:3000)
+#   OPENCLAW_TOKEN                 — Bearer token for the OpenClaw gateway
 #   MEMORY_DATABASE_API_URL        — Memory DB API base URL (default: https://memory-database.etdofresh.com)
-#   MEMORY_DATABASE_API_WRITE_TOKEN — Bearer token for API writes
-#
-# Mount the OpenClaw data directory:
-#   -v /data/.openclaw:/data/.openclaw:ro
+#   MEMORY_DATABASE_API_WRITE_TOKEN — Bearer token for Memory DB API writes
 
 FROM node:22-alpine AS builder
 

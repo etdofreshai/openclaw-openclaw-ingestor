@@ -1,28 +1,12 @@
 /**
- * Process a single JSONL entry: post message, upload attachments, link them.
+ * Process a single message from the OpenClaw API: post message, upload attachments, link them.
  */
 
 import { postMessage, linkAttachment } from './api.js';
 import { extractAndUploadAttachments } from './attachments.js';
+import type { MessageInfo, ContentBlock } from './openclaw-client.js';
 
 const MAX_CONTENT_LENGTH = 100_000;
-
-interface ContentBlock {
-  type: string;
-  text?: string;
-  [key: string]: unknown;
-}
-
-interface JournalEntry {
-  type: string;
-  id: string;
-  timestamp: string;
-  message?: {
-    role: string;
-    content: string | ContentBlock[];
-    model?: string;
-  };
-}
 
 function log(prefix: string, msg: string): void {
   console.log(`[${prefix}] ${new Date().toISOString()} ${msg}`);
@@ -44,7 +28,7 @@ function extractTextContent(content: string | ContentBlock[]): string {
   const texts: string[] = [];
   for (const block of content) {
     if (block.type === 'text' && block.text) {
-      texts.push(block.text as string);
+      texts.push(block.text);
     }
   }
 
@@ -53,22 +37,15 @@ function extractTextContent(content: string | ContentBlock[]): string {
 }
 
 /**
- * Process a single JSONL entry.
+ * Process a single message from the OpenClaw API.
  * Returns true if processed, false if skipped.
  */
-export async function ingestEntry(
-  entry: JournalEntry,
-  sessionId: string,
+export async function ingestMessage(
+  message: MessageInfo,
+  sessionKey: string,
   logPrefix: string = 'ingest',
 ): Promise<boolean> {
-  // Skip non-message entries
-  if (entry.type !== 'message' || !entry.message) {
-    return false;
-  }
-
-  const { role, content, model } = entry.message;
-  const entryId = entry.id;
-  const timestamp = entry.timestamp;
+  const { id: messageId, role, content, model, timestamp } = message;
 
   // Determine sender/recipient
   const sender = role === 'user' ? 'ET' : 'OpenClaw';
@@ -77,20 +54,20 @@ export async function ingestEntry(
   // Extract text content
   const textContent = extractTextContent(content);
   if (!textContent && (!Array.isArray(content) || content.length === 0)) {
-    log(logPrefix, `Skipping empty message ${sessionId}:${entryId}`);
+    log(logPrefix, `Skipping empty message ${sessionKey}:${messageId}`);
     return false;
   }
 
   // Post message to API
-  const externalId = `${sessionId}:${entryId}`;
-  const metadata: Record<string, unknown> = { sessionId, role };
+  const externalId = `${sessionKey}:${messageId}`;
+  const metadata: Record<string, unknown> = { sessionId: sessionKey, role };
   if (model) metadata.model = model;
 
   try {
     const result = await postMessage({
       source: 'openclaw',
       external_id: externalId,
-      timestamp,
+      timestamp: timestamp || new Date().toISOString(),
       sender,
       recipient,
       content: textContent || '[attachment only]',
@@ -108,8 +85,8 @@ export async function ingestEntry(
     if (Array.isArray(content) && result.record_id) {
       const attachments = await extractAndUploadAttachments(
         content as ContentBlock[],
-        sessionId,
-        entryId,
+        sessionKey,
+        messageId,
       );
 
       for (const att of attachments) {
