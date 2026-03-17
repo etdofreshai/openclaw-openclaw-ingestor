@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { listSessions, getSessionHistory } from './openclaw-client.js';
 import { ingestMessage } from './ingest.js';
+import { recordPoll } from './health.js';
 import type { SessionInfo } from './openclaw-client.js';
 
 const STATE_FILE = path.join(process.cwd(), '.watcher-state.json');
@@ -154,8 +155,11 @@ export async function startPoller(): Promise<() => void> {
       if (processed > 0 || errors > 0) {
         log(`Poll complete: ${processed} processed, ${errors} errors`);
       }
+      recordPoll();
     } catch (err) {
-      logError(`Poll error: ${(err as Error).message}`);
+      const msg = (err as Error).message;
+      logError(`Poll error: ${msg}`);
+      recordPoll(msg);
     } finally {
       polling = false;
     }

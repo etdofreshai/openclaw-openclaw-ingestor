@@ -4,6 +4,7 @@
  */
 
 import { startPoller } from './watcher.js';
+import { startHealthServer } from './health.js';
 
 const RETRY_DELAY_MS = 30_000;
 
@@ -20,6 +21,9 @@ async function sleep(ms: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const healthPort = parseInt(process.env.PORT || '3000', 10);
+  startHealthServer(healthPort);
+
   log('OpenClaw Ingestor starting...');
   log(`Memory DB API: ${process.env.MEMORY_DATABASE_API_URL || 'https://memory-database.etdofresh.com'}`);
   log(`Write token: ${process.env.MEMORY_DATABASE_API_WRITE_TOKEN ? '***set***' : 'NOT SET'}`);
