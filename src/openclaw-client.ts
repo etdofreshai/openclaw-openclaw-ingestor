@@ -167,7 +167,7 @@ export async function listSessions(opts?: { limit?: number }): Promise<SessionIn
       const match = /\b(agent:\S+)/.exec(line);
       if (match) {
         sessions.push({
-          sessionKey: match[1],
+          key: match[1], sessionKey: match[1],
           kind: line.includes('subagent') ? 'subagent' : 'main',
         });
       }
