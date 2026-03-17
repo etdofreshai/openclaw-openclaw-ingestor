@@ -114,7 +114,9 @@ export async function invokeTool(
         throw new Error(`invokeTool(${tool}) returned error: ${data.error ?? JSON.stringify(data).slice(0, 500)}`);
       }
 
-      return data.result;
+      // Unwrap tool result: { content: [...], details: {...} } → prefer details, fall back to full result
+      const r = data.result as Record<string, unknown> | null;
+      return (r && typeof r === 'object' && 'details' in r) ? r.details : data.result;
     } catch (err) {
       if (err instanceof TypeError && attempt < MAX_RETRIES) {
         const waitMs = BASE_DELAY_MS * Math.pow(2, attempt);
