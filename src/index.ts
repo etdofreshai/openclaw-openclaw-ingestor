@@ -31,8 +31,8 @@ async function main(): Promise<void> {
     log(`OpenClaw API: ${process.env.OPENCLAW_URL}`);
   }
 
-  if (!process.env.OPENCLAW_TOKEN) {
-    logError('OPENCLAW_TOKEN is not set — will retry until available');
+  if (!(process.env.OPENCLAW_TOKEN || process.env.OPENCLAW_GATEWAY_TOKEN)) {
+    logError('OPENCLAW_TOKEN or OPENCLAW_GATEWAY_TOKEN is not set — will retry until available');
   } else {
     log(`OpenClaw token: ***set***`);
   }
@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   let cleanup: (() => void) | null = null;
 
   while (!cleanup) {
-    if (!process.env.OPENCLAW_URL || !process.env.OPENCLAW_TOKEN) {
+    if (!process.env.OPENCLAW_URL || !(process.env.OPENCLAW_TOKEN || process.env.OPENCLAW_GATEWAY_TOKEN)) {
       log(`Waiting ${RETRY_DELAY_MS / 1000}s for OPENCLAW_URL and OPENCLAW_TOKEN to be set...`);
       await sleep(RETRY_DELAY_MS);
       continue;

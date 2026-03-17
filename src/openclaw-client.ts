@@ -56,7 +56,7 @@ async function sleep(ms: number): Promise<void> {
 
 function getConfig(): { url: string; token: string } {
   const url = process.env.OPENCLAW_URL || '';
-  const token = process.env.OPENCLAW_TOKEN || '';
+  const token = process.env.OPENCLAW_TOKEN || process.env.OPENCLAW_GATEWAY_TOKEN || '';
   return { url, token };
 }
 
