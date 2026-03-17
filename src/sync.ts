@@ -83,7 +83,7 @@ async function main(): Promise<void> {
 
   // 2. For each session, fetch history and ingest
   for (const session of sessions) {
-    const { sessionKey } = session;
+    const sessionKey = session.key ?? session.sessionKey;
     totalSessions++;
 
     try {
