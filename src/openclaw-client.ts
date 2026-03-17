@@ -7,9 +7,12 @@ const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
 
 export interface SessionInfo {
-  sessionKey: string;
+  key: string;         // actual field name from OpenClaw API
+  sessionKey?: string; // alias, may not be present
   kind: string;
   label?: string;
+  displayName?: string;
+  updatedAt?: number;
   lastMessageAt?: string;
 }
 

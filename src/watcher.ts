@@ -64,8 +64,9 @@ function findUpdatedSessions(
 
   const lastPollTime = new Date(lastPoll).getTime();
   return sessions.filter(s => {
-    if (!s.lastMessageAt) return true; // Unknown — include to be safe
-    return new Date(s.lastMessageAt).getTime() > lastPollTime;
+    const updatedMs = s.updatedAt ?? (s.lastMessageAt ? new Date(s.lastMessageAt).getTime() : null);
+    if (updatedMs === null) return true; // Unknown — include to be safe
+    return updatedMs > lastPollTime;
   });
 }
 
@@ -87,7 +88,7 @@ async function pollOnce(state: WatcherState): Promise<{ processed: number; error
   log(`${updated.length} session(s) updated since last poll`);
 
   for (const session of updated) {
-    const { sessionKey } = session;
+    const sessionKey = session.key ?? session.sessionKey;
 
     try {
       const lastMessageId = state.sessions[sessionKey];
