@@ -75,7 +75,7 @@ export async function invokeTool(
   const body = {
     tool,
     args,
-    sessionKey: sessionKey ?? 'main',
+    ...(sessionKey ? { sessionKey } : {}),
   };
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
