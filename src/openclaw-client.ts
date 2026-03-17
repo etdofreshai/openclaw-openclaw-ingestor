@@ -138,7 +138,6 @@ export async function listSessions(opts?: { limit?: number }): Promise<SessionIn
   const limit = opts?.limit ?? 50;
   const result = await invokeTool('sessions_list', {
     limit,
-    kinds: ['main', 'subagent'],
     messageLimit: 0,
   });
 
