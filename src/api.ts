@@ -118,6 +118,93 @@ export async function postMessage(payload: MessagePayload): Promise<{ record_id:
 }
 
 /**
+ * Update an existing message by external_id (overwrite mode).
+ * Tries PUT /api/messages/:external_id first, falls back to PATCH.
+ * Returns { record_id } on success.
+ */
+export async function patchMessage(
+  externalId: string,
+  payload: Partial<MessagePayload>,
+): Promise<{ record_id: string; updated: boolean }> {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(`${API_URL}/api/messages/${encodeURIComponent(externalId)}`, {
+        method: 'PUT',
+        headers: headers(),
+        body: JSON.stringify(payload),
+      });
+
+      if (res.status === 200 || res.status === 201) {
+        const body = await res.json() as ApiResponse;
+        return { record_id: body.record_id || '', updated: true };
+      }
+
+      if (res.status === 404) {
+        // Endpoint not supported — log and return
+        log(`PUT /api/messages/${externalId} returned 404 — update not yet supported by Memory DB API`);
+        return { record_id: '', updated: false };
+      }
+
+      if (res.status === 405) {
+        // Method not allowed — endpoint doesn't support PUT
+        log(`PUT /api/messages/${externalId} returned 405 — update not yet supported by Memory DB API`);
+        return { record_id: '', updated: false };
+      }
+
+      if (res.status === 429) {
+        const retryAfter = res.headers.get('Retry-After');
+        const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : BASE_DELAY_MS * Math.pow(2, attempt);
+        log(`Rate limited (429) on patchMessage, waiting ${waitMs}ms`);
+        await sleep(waitMs);
+        continue;
+      }
+
+      const text = await res.text();
+      if (res.status >= 500 && attempt < MAX_RETRIES) {
+        const waitMs = BASE_DELAY_MS * Math.pow(2, attempt);
+        logError(`Server error ${res.status} on patchMessage, retry ${attempt}/${MAX_RETRIES}`);
+        await sleep(waitMs);
+        continue;
+      }
+
+      throw new Error(`API PUT /api/messages/${externalId} failed: ${res.status} — ${text.slice(0, 500)}`);
+    } catch (err) {
+      if (err instanceof TypeError && attempt < MAX_RETRIES) {
+        const waitMs = BASE_DELAY_MS * Math.pow(2, attempt);
+        logError(`Network error on patchMessage, retry ${attempt}/${MAX_RETRIES}`);
+        await sleep(waitMs);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error('patchMessage: exhausted retries');
+}
+
+/**
+ * Look up a message by external_id. Returns { record_id } or null.
+ */
+export async function findMessageByExternalId(
+  externalId: string,
+): Promise<{ record_id: string } | null> {
+  try {
+    const res = await fetch(
+      `${API_URL}/api/messages?external_id=${encodeURIComponent(externalId)}&limit=1`,
+      { method: 'GET', headers: headers() },
+    );
+    if (!res.ok) return null;
+    const body = await res.json() as { messages?: Array<{ record_id: string }> };
+    if (body.messages && body.messages.length > 0) {
+      return { record_id: body.messages[0].record_id };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Upload an attachment (multipart/form-data).
  * Returns { record_id, sha256 }.
  */

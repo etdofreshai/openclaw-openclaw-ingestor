@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getHealthState } from './health.js';
 import { listSessions, getSessionHistory } from './openclaw-client.js';
+import type { BackfillOptions } from './ingest.js';
 
 const WATCHER_STATE_FILE = path.join(process.cwd(), '.watcher-state.json');
 const SYNC_STATE_FILE = path.join(process.cwd(), '.sync-state.json');
@@ -19,16 +20,20 @@ interface BackfillStatus {
   running: boolean;
   startedAt: string | null;
   processed: number;
+  skipped: number;
   errors: number;
   completedAt: string | null;
+  options: BackfillOptions;
 }
 
 const backfillStatus: BackfillStatus = {
   running: false,
   startedAt: null,
   processed: 0,
+  skipped: 0,
   errors: 0,
   completedAt: null,
+  options: {},
 };
 
 /**
@@ -42,14 +47,18 @@ export function getBackfillStatus(): BackfillStatus {
  * Run a full sync (backfill) in the background.
  * Imports sync logic dynamically to avoid circular deps.
  */
-async function runBackfill(): Promise<void> {
+async function runBackfill(options: BackfillOptions = {}): Promise<void> {
   if (backfillStatus.running) return;
 
   backfillStatus.running = true;
   backfillStatus.startedAt = new Date().toISOString();
   backfillStatus.processed = 0;
+  backfillStatus.skipped = 0;
   backfillStatus.errors = 0;
   backfillStatus.completedAt = null;
+  backfillStatus.options = { ...options };
+
+  const dryTag = options.dryRun ? '[dry-run] ' : '';
 
   try {
     // Use the same logic as sync.ts but inline to track progress
@@ -57,7 +66,8 @@ async function runBackfill(): Promise<void> {
     const { ingestMessage } = await import('./ingest.js');
 
     const sessions = await ls({ limit: 500 });
-    log(`[backfill] Found ${sessions.length} sessions`);
+    log(`[backfill] ${dryTag}Found ${sessions.length} sessions`);
+    log(`[backfill] Options: ${JSON.stringify(options)}`);
 
     for (const session of sessions) {
       const sessionKey = session.key ?? session.sessionKey;
@@ -68,8 +78,12 @@ async function runBackfill(): Promise<void> {
 
         for (const msg of messages) {
           try {
-            const ok = await ingestMessage(msg, sessionKey, 'backfill');
-            if (ok) backfillStatus.processed++;
+            const ok = await ingestMessage(msg, sessionKey, 'backfill', options);
+            if (ok) {
+              backfillStatus.processed++;
+            } else {
+              backfillStatus.skipped++;
+            }
           } catch {
             backfillStatus.errors++;
           }
@@ -79,12 +93,12 @@ async function runBackfill(): Promise<void> {
       }
     }
   } catch (err) {
-    log(`[backfill] Fatal error: ${(err as Error).message}`);
+    log(`[backfill] ${dryTag}Fatal error: ${(err as Error).message}`);
     backfillStatus.errors++;
   } finally {
     backfillStatus.running = false;
     backfillStatus.completedAt = new Date().toISOString();
-    log(`[backfill] Complete: ${backfillStatus.processed} processed, ${backfillStatus.errors} errors`);
+    log(`[backfill] ${dryTag}Complete: ${backfillStatus.processed} processed, ${backfillStatus.skipped} skipped, ${backfillStatus.errors} errors`);
   }
 }
 
@@ -218,9 +232,31 @@ export function startServer(port = 3000): http.Server {
           json(res, { ok: false, message: 'Backfill already running' }, 409);
           return;
         }
+
+        // Parse options from request body
+        let options: BackfillOptions = {};
+        try {
+          const body = await readBody(req);
+          if (body.trim()) {
+            const parsed = JSON.parse(body);
+            options = {
+              full: parsed.full ?? true,
+              dryRun: parsed.dryRun ?? false,
+              overwrite: parsed.overwrite ?? false,
+              attachmentsOnly: parsed.attachmentsOnly ?? false,
+              includeAttachments: parsed.includeAttachments ?? true,
+            };
+          }
+        } catch {
+          // If body parsing fails, use defaults
+          options = { full: true, dryRun: false, overwrite: false, attachmentsOnly: false, includeAttachments: true };
+        }
+
         // Fire and forget
-        void runBackfill();
-        json(res, { ok: true, message: 'Backfill started' });
+        void runBackfill(options);
+
+        const optStr = options.dryRun ? ' (dry run)' : '';
+        json(res, { ok: true, message: `Backfill started${optStr}`, options });
         return;
       }
 

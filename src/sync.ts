@@ -1,12 +1,12 @@
 /**
  * One-shot pull-based sync: fetch sessions and messages from the OpenClaw API.
- * Usage: node dist/sync.js [--full]
+ * Usage: node dist/sync.js [--full] [--dry-run] [--overwrite] [--attachments-only] [--no-attachments]
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { listSessions, getSessionHistory } from './openclaw-client.js';
-import { ingestMessage } from './ingest.js';
+import { ingestMessage, type BackfillOptions } from './ingest.js';
 
 const STATE_FILE = path.join(process.cwd(), '.sync-state.json');
 const MAX_SESSIONS = 500;
@@ -49,7 +49,15 @@ function saveState(state: SyncState): void {
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const fullSync = args.includes('--full');
+
+  // Parse CLI flags into BackfillOptions
+  const options: BackfillOptions = {
+    full: args.includes('--full'),
+    dryRun: args.includes('--dry-run'),
+    overwrite: args.includes('--overwrite'),
+    attachmentsOnly: args.includes('--attachments-only'),
+    includeAttachments: !args.includes('--no-attachments'),
+  };
 
   // Validate env
   if (!process.env.OPENCLAW_URL || !process.env.OPENCLAW_TOKEN) {
@@ -57,11 +65,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  log(`Starting ${fullSync ? 'FULL' : 'incremental'} sync...`);
+  const dryTag = options.dryRun ? '[dry-run] ' : '';
+  log(`${dryTag}Starting ${options.full ? 'FULL' : 'incremental'} sync...`);
+  log(`Options: ${JSON.stringify(options)}`);
   log(`OpenClaw API: ${process.env.OPENCLAW_URL}`);
 
   let state: SyncState;
-  if (fullSync) {
+  if (options.full) {
     log('Full sync requested — resetting state');
     state = { sessions: {}, lastRun: '' };
   } else {
@@ -88,7 +98,7 @@ async function main(): Promise<void> {
 
     try {
       const lastMessageId = state.sessions[sessionKey];
-      const afterOpt = (!fullSync && lastMessageId) ? { after: lastMessageId } : undefined;
+      const afterOpt = (!options.full && lastMessageId) ? { after: lastMessageId } : undefined;
 
       const messages = await getSessionHistory(sessionKey, {
         limit: MESSAGES_PER_SESSION,
@@ -105,13 +115,13 @@ async function main(): Promise<void> {
 
       for (const msg of messages) {
         // Skip messages we've already seen (by ID comparison)
-        if (!fullSync && lastMessageId && msg.id <= lastMessageId) {
+        if (!options.full && lastMessageId && msg.id <= lastMessageId) {
           totalSkipped++;
           continue;
         }
 
         try {
-          const ok = await ingestMessage(msg, sessionKey, 'sync');
+          const ok = await ingestMessage(msg, sessionKey, 'sync', options);
           if (ok) {
             totalProcessed++;
           } else {
@@ -129,7 +139,8 @@ async function main(): Promise<void> {
       }
 
       // Update state with the latest message ID for this session
-      if (latestId) {
+      // Don't save state during dry runs
+      if (latestId && !options.dryRun) {
         state.sessions[sessionKey] = latestId;
       }
     } catch (err) {
@@ -139,10 +150,12 @@ async function main(): Promise<void> {
     }
   }
 
-  state.lastRun = new Date().toISOString();
-  saveState(state);
+  if (!options.dryRun) {
+    state.lastRun = new Date().toISOString();
+    saveState(state);
+  }
 
-  log('=== Sync Complete ===');
+  log(`=== Sync Complete${options.dryRun ? ' (DRY RUN)' : ''} ===`);
   log(`Sessions scanned: ${totalSessions}`);
   log(`Messages processed: ${totalProcessed}`);
   log(`Messages skipped: ${totalSkipped}`);
