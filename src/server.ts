@@ -5,8 +5,13 @@
 
 import http from 'http';
 import { URL } from 'url';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { getHealthState } from './health.js';
 import { listSessions, getSessionHistory } from './openclaw-client.js';
+
+const WATCHER_STATE_FILE = path.join(process.cwd(), '.watcher-state.json');
+const SYNC_STATE_FILE = path.join(process.cwd(), '.sync-state.json');
 
 /* ── Backfill State ──────────────────────────────────── */
 
@@ -117,6 +122,30 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
+/* ── State File Reader ───────────────────────────────── */
+
+interface StateFileSession {
+  key: string;
+  lastMessageId: string;
+  source: string;
+}
+
+function loadSessionsFromStateFile(filePath: string, source: string): StateFileSession[] {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const sessions: Record<string, string> = data?.sessions;
+    if (!sessions || typeof sessions !== 'object') return [];
+    return Object.entries(sessions).map(([key, lastMessageId]) => ({
+      key,
+      lastMessageId: String(lastMessageId),
+      source,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /* ── Route Matching ──────────────────────────────────── */
 
 // Match /api/sessions/:sessionKey/messages
@@ -157,6 +186,16 @@ export function startServer(port = 3000): http.Server {
 
       // ── GET /api/sessions ──
       if (pathname === '/api/sessions' && req.method === 'GET') {
+        // Try watcher state first, then sync state, then fall back to live API
+        let sessionsFromState = loadSessionsFromStateFile(WATCHER_STATE_FILE, 'watcher-state');
+        if (sessionsFromState.length === 0) {
+          sessionsFromState = loadSessionsFromStateFile(SYNC_STATE_FILE, 'sync-state');
+        }
+        if (sessionsFromState.length > 0) {
+          json(res, sessionsFromState);
+          return;
+        }
+        // Fallback: live API
         const sessions = await listSessions({ limit: 500 });
         json(res, sessions);
         return;
