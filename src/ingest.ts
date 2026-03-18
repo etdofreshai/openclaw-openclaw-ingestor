@@ -60,7 +60,7 @@ export async function ingestMessage(
 
   // Post message to API
   const externalId = `${sessionKey}:${messageId}`;
-  const metadata: Record<string, unknown> = { sessionId: sessionKey, role };
+  const metadata: Record<string, unknown> = { sessionId: sessionKey, sessionKey, role };
   if (model) metadata.model = model;
 
   try {
