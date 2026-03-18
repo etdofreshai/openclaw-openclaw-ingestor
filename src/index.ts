@@ -1,10 +1,11 @@
 /**
  * OpenClaw Ingestor — Entry point.
- * Starts the API-based polling watcher.
+ * Starts the combined HTTP server (health + sessions + backfill API)
+ * and the polling watcher.
  */
 
 import { startPoller } from './watcher.js';
-import { startHealthServer } from './health.js';
+import { startServer } from './server.js';
 
 const RETRY_DELAY_MS = 30_000;
 
@@ -21,8 +22,8 @@ async function sleep(ms: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const healthPort = parseInt(process.env.PORT || '3000', 10);
-  startHealthServer(healthPort);
+  const serverPort = parseInt(process.env.PORT || '3000', 10);
+  startServer(serverPort);
 
   log('OpenClaw Ingestor starting...');
   log(`Memory DB API: ${process.env.MEMORY_DATABASE_API_URL || 'https://memory-database.etdofresh.com'}`);
