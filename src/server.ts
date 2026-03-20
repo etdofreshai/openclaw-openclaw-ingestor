@@ -10,6 +10,8 @@ import * as path from 'node:path';
 import { getHealthState } from './health.js';
 import { listSessions, getSessionHistory } from './openclaw-client.js';
 import type { BackfillOptions } from './ingest.js';
+import { runJsonlBackfill, getJsonlBackfillStatus } from './jsonl-backfill.js';
+import type { JsonlBackfillOptions } from './jsonl-backfill.js';
 
 const WATCHER_STATE_FILE = path.join(process.cwd(), '.watcher-state.json');
 const SYNC_STATE_FILE = path.join(process.cwd(), '.sync-state.json');
@@ -263,6 +265,49 @@ export function startServer(port = 3000): http.Server {
       // ── GET /api/backfill/status ──
       if (pathname === '/api/backfill/status' && req.method === 'GET') {
         json(res, getBackfillStatus());
+        return;
+      }
+
+      // ── POST /api/backfill/jsonl ──
+      if (pathname === '/api/backfill/jsonl' && req.method === 'POST') {
+        const jsonlStatus = getJsonlBackfillStatus();
+        if (jsonlStatus.running) {
+          json(res, { ok: false, message: 'JSONL backfill already running', status: jsonlStatus }, 409);
+          return;
+        }
+
+        let jsonlOptions: JsonlBackfillOptions = {};
+        try {
+          const body = await readBody(req);
+          if (body.trim()) {
+            const parsed = JSON.parse(body);
+            jsonlOptions = {
+              path: parsed.path ?? undefined,
+              dryRun: parsed.dryRun ?? false,
+              overwrite: parsed.overwrite ?? false,
+              limit: parsed.limit ?? undefined,
+            };
+          }
+        } catch {
+          jsonlOptions = { dryRun: false, overwrite: false };
+        }
+
+        // Fire and forget — runs in background
+        void runJsonlBackfill(jsonlOptions);
+
+        const dryStr = jsonlOptions.dryRun ? ' (dry run)' : '';
+        json(res, {
+          ok: true,
+          message: `JSONL backfill started${dryStr}`,
+          runId: getJsonlBackfillStatus().runId,
+          options: jsonlOptions,
+        });
+        return;
+      }
+
+      // ── GET /api/backfill/jsonl/status ──
+      if (pathname === '/api/backfill/jsonl/status' && req.method === 'GET') {
+        json(res, getJsonlBackfillStatus());
         return;
       }
 
