@@ -142,6 +142,43 @@ export async function extractAndUploadAttachments(
           }
         }
 
+        // Handle file path references in text blocks (e.g., voice messages)
+        // Pattern: [media attached: /data/.openclaw/media/inbound/file_xxx.ogg ...]
+        if (block.type === 'text' && block.text) {
+          const mediaMatches = (block.text as string).matchAll(
+            /\/data\/\.openclaw\/media\/inbound\/(file_[^\s\]|]+\.(ogg|mp3|m4a|wav|jpg|jpeg|png|gif|webp|pdf|mp4|mov))/gi
+          );
+          for (const match of mediaMatches) {
+            const filename = match[1];
+            const filePath = `/data/.openclaw/media/inbound/${filename}`;
+            try {
+              const { existsSync, readFileSync } = await import('fs');
+              if (existsSync(filePath)) {
+                const buffer = readFileSync(filePath);
+                const ext = filename.split('.').pop()?.toLowerCase() || 'bin';
+                const mimeMap: Record<string, string> = {
+                  ogg: 'audio/ogg', mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav',
+                  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
+                  pdf: 'application/pdf', mp4: 'video/mp4', mov: 'video/quicktime',
+                };
+                const mediaType = mimeMap[ext] || 'application/octet-stream';
+                const metadata = { sessionId, entryId, ordinal, source_type: 'file-path', original_path: filePath };
+
+                if (dryRun) {
+                  log(`[dry-run] Would upload file: ${filename} (${buffer.length} bytes)`);
+                } else {
+                  log(`Uploading file attachment: ${filename} (${buffer.length} bytes)`);
+                  const result = await postAttachment(buffer, mediaType, filename, metadata);
+                  results.push({ attachmentRecordId: result.record_id, ordinal });
+                }
+                ordinal++;
+              }
+            } catch (err) {
+              logError(`Error uploading file ${filename}: ${(err as Error).message}`);
+            }
+          }
+        }
+
         // Recurse into tool_result blocks
         if (block.type === 'tool_result' && block.content) {
           if (Array.isArray(block.content)) {
