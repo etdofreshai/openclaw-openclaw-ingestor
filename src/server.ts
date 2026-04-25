@@ -13,8 +13,9 @@ import type { BackfillOptions } from './ingest.js';
 import { runJsonlBackfill, getJsonlBackfillStatus } from './jsonl-backfill.js';
 import type { JsonlBackfillOptions } from './jsonl-backfill.js';
 
-const WATCHER_STATE_FILE = path.join(process.cwd(), '.watcher-state.json');
-const SYNC_STATE_FILE = path.join(process.cwd(), '.sync-state.json');
+const DATA_DIR = process.env.DATA_DIR || process.cwd();
+const WATCHER_STATE_FILE = path.join(DATA_DIR, '.watcher-state.json');
+const SYNC_STATE_FILE = path.join(DATA_DIR, '.sync-state.json');
 
 /* ── Backfill State ──────────────────────────────────── */
 

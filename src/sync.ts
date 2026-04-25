@@ -8,7 +8,8 @@ import * as path from 'node:path';
 import { listSessions, getSessionHistory } from './openclaw-client.js';
 import { ingestMessage, type BackfillOptions } from './ingest.js';
 
-const STATE_FILE = path.join(process.cwd(), '.sync-state.json');
+const DATA_DIR = process.env.DATA_DIR || process.cwd();
+const STATE_FILE = path.join(DATA_DIR, '.sync-state.json');
 const MAX_SESSIONS = 500;
 const MESSAGES_PER_SESSION = 500;
 
@@ -40,6 +41,7 @@ function loadState(): SyncState {
 
 function saveState(state: SyncState): void {
   try {
+    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
     log(`State saved to ${STATE_FILE}`);
   } catch (err) {

@@ -11,7 +11,8 @@ import { ingestMessage } from './ingest.js';
 import { recordPoll } from './health.js';
 import type { SessionInfo } from './openclaw-client.js';
 
-const STATE_FILE = path.join(process.cwd(), '.watcher-state.json');
+const DATA_DIR = process.env.DATA_DIR || process.cwd();
+const STATE_FILE = path.join(DATA_DIR, '.watcher-state.json');
 const POLL_INTERVAL_MS = 60_000; // 60 seconds
 const MESSAGES_PER_POLL = 200;
 
@@ -44,6 +45,7 @@ function loadState(): WatcherState {
 
 function saveState(state: WatcherState): void {
   try {
+    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
   } catch (err) {
     logError(`Failed to save state: ${(err as Error).message}`);

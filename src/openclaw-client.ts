@@ -37,6 +37,10 @@ export interface MessageInfo {
   content: string | ContentBlock[];
   timestamp?: string | number;
   model?: string;
+  __openclaw?: {
+    id?: string;
+    seq?: number;
+  };
 }
 
 interface InvokeResponse {
@@ -191,6 +195,20 @@ export async function listSessions(opts?: { limit?: number }): Promise<SessionIn
 /**
  * Get message history for a session.
  */
+function normalizeMessages(messages: unknown[]): MessageInfo[] {
+  return messages.map((raw, index) => {
+    const msg = raw as MessageInfo & Record<string, unknown>;
+    const openclawMeta = msg.__openclaw as { id?: string; seq?: number } | undefined;
+    const fallbackId = openclawMeta?.id
+      ?? (typeof msg.responseId === 'string' ? msg.responseId : undefined)
+      ?? `${msg.role ?? 'message'}-${msg.timestamp ?? index}-${index}`;
+    return {
+      ...msg,
+      id: String(msg.id ?? fallbackId),
+    } as MessageInfo;
+  });
+}
+
 export async function getSessionHistory(
   sessionKey: string,
   opts?: { limit?: number; after?: string },
@@ -211,7 +229,7 @@ export async function getSessionHistory(
     try {
       const parsed = JSON.parse(result);
       if (Array.isArray(parsed)) {
-        return parsed as MessageInfo[];
+        return normalizeMessages(parsed);
       }
     } catch {
       // Not JSON
@@ -221,14 +239,14 @@ export async function getSessionHistory(
   }
 
   if (Array.isArray(result)) {
-    return result as MessageInfo[];
+    return normalizeMessages(result);
   }
 
   // If it's an object with a messages/items array
   const obj = result as Record<string, unknown>;
-  if (Array.isArray(obj.messages)) return obj.messages as MessageInfo[];
-  if (Array.isArray(obj.items)) return obj.items as MessageInfo[];
-  if (Array.isArray(obj.history)) return obj.history as MessageInfo[];
+  if (Array.isArray(obj.messages)) return normalizeMessages(obj.messages);
+  if (Array.isArray(obj.items)) return normalizeMessages(obj.items);
+  if (Array.isArray(obj.history)) return normalizeMessages(obj.history);
 
   logError(`Unexpected sessions_history result type for ${sessionKey}: ${typeof result}`);
   return [];
